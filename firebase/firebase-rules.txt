@@ -11,7 +11,7 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow create: if signedIn() && request.auth.uid == userId
-        && !('role' in request.resource.data);
+        && request.resource.data.role == 'membre';
       allow read: if signedIn() && (request.auth.uid == userId || admin());
       allow update: if signedIn() && request.auth.uid == userId
         && request.resource.data.role == resource.data.role;
@@ -21,6 +21,13 @@ service cloud.firestore {
     match /cups/{cupId} {
       allow read: if true;
       allow create, update, delete: if admin();
+
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if signedIn() && request.resource.data.authorUid == request.auth.uid;
+        allow update: if false;
+        allow delete: if signedIn() && (request.auth.uid == resource.data.authorUid || admin());
+      }
     }
 
     match /casts/{castId} {
