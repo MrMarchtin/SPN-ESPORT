@@ -222,6 +222,21 @@
     border:1px dashed var(--slate-600); border-radius:8px; padding:28px;
     color:var(--slate-400); font-family:var(--mono); font-size:13px;
   }
+  .cup-card{ background:var(--navy-panel); border:1px solid var(--line); border-radius:8px; padding:20px 24px; margin-bottom:14px; }
+  .cup-card .date{ font-family:var(--mono); color:var(--slate-400); font-size:13px; }
+  .cup-card .tournoi{ font-weight:600; font-size:17px; margin:4px 0; }
+  .cup-card .result{ font-family:var(--mono); color:var(--sky-300); font-size:13.5px; }
+  .cup-comments{ margin-top:16px; padding-top:14px; border-top:1px dashed var(--line); }
+  .cup-comments-title{ font-family:var(--mono); font-size:11px; letter-spacing:0.1em; text-transform:uppercase; color:var(--sky-500); margin:0 0 10px; }
+  .cup-comment{ background:rgba(89,186,255,0.05); border-radius:6px; padding:10px 12px; margin-bottom:8px; }
+  .cup-comment-author{ font-family:var(--mono); font-size:11px; color:var(--sky-300); font-weight:700; }
+  .cup-comment-text{ margin:4px 0 0; font-size:14px; color:var(--slate-100,#eef4fb); }
+  .cup-comment-delete{ background:none; border:0; color:#ff9d9d; font-family:var(--mono); font-size:11px; margin-top:6px; padding:0; cursor:pointer; }
+  .cup-comment-form{ display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+  .cup-comment-form textarea{ width:100%; min-height:56px; resize:vertical; background:rgba(255,255,255,0.03); border:1px solid var(--line); border-radius:6px; padding:10px; color:inherit; font-size:14px; font-family:inherit; }
+  .cup-comment-form button{ align-self:flex-start; border:0; border-radius:6px; background:var(--sky-500); color:#04121f; padding:9px 16px; font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; cursor:pointer; }
+  .cup-comment-login{ color:var(--slate-400); font-family:var(--mono); font-size:12.5px; }
+  .cup-comment-login a{ color:var(--sky-300); }
   .news-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px; }
   .news-card{ background:var(--navy-panel); border:1px solid var(--line); border-radius:8px; padding:24px; }
   .news-card h3{ font-size:19px; margin:10px 0; }
@@ -480,16 +495,74 @@
 </script>
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-  import { getFirestore, collection, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+  import { getFirestore, collection, doc, getDoc, addDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+  import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
   import { firebaseConfig } from './firebase/firebase-config.js';
 
   const safe = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' }[char]));
   const formatDate = value => value ? new Date(value).toLocaleString('fr-FR', { dateStyle:'medium', timeStyle:'short' }) : 'Date à confirmer';
   if (Object.values(firebaseConfig).every(Boolean)) {
-    const db = getFirestore(initializeApp(firebaseConfig));
-    onSnapshot(collection(db, 'cups'), snapshot => {
-      const cups = snapshot.docs.map(item => ({ id:item.id, ...item.data() })).sort((a,b) => new Date(a.date || 0) - new Date(b.date || 0));
-      document.getElementById('cupsList').innerHTML = cups.length ? cups.map(cup => `<div class="score-row"><span class="date">${formatDate(cup.date)}</span><span class="tournoi">${safe(cup.title)}</span><span class="result">${safe(cup.description || 'Informations à venir')}${cup.participants?.length ? `<br><small>Joueurs : ${safe(cup.participants.map(player => player.displayName).join(', '))}</small>` : ''}</span><span class="rank">CUP</span></div>`).join('') : '<p class="feed-empty">Aucune cup publiée pour le moment.</p>';
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    let cups = [], currentUser = null, isAdminHome = false, commentsByCup = {}, commentUnsub = {};
+
+    function renderCupComments(cupId) {
+      const comments = commentsByCup[cupId] || [];
+      const list = comments.map(cm => `<div class="cup-comment"><span class="cup-comment-author">${safe(cm.authorName)}</span><p class="cup-comment-text">${safe(cm.text)}</p>${currentUser && (currentUser.uid === cm.authorUid || isAdminHome) ? `<button class="cup-comment-delete" data-comment-delete="${cupId}|${cm.id}">Supprimer</button>` : ''}</div>`).join('');
+      const form = currentUser
+        ? `<form class="cup-comment-form" data-cup-id="${cupId}"><textarea maxlength="300" placeholder="Ton commentaire…" required></textarea><button type="submit">Commenter</button></form>`
+        : `<p class="cup-comment-login">Connecte-toi sur <a href="compte.html">Mon compte</a> pour commenter.</p>`;
+      return `<div class="cup-comments"><p class="cup-comments-title">Commentaires${comments.length ? ` (${comments.length})` : ''}</p>${list || '<p class="feed-empty">Aucun commentaire pour le moment.</p>'}${form}</div>`;
+    }
+    function renderCupsList() {
+      const el = document.getElementById('cupsList');
+      el.innerHTML = cups.length ? cups.map(cup => `<article class="cup-card"><span class="date">${formatDate(cup.date)}</span><div class="tournoi">${safe(cup.title)}</div><div class="result">${safe(cup.description || 'Informations à venir')}${cup.participants?.length ? `<br><small>Joueurs : ${safe(cup.participants.map(player => player.displayName).join(', '))}</small>` : ''}</div>${renderCupComments(cup.id)}</article>`).join('') : '<p class="feed-empty">Aucune cup publiée pour le moment.</p>';
+    }
+    function watchCupComments(cupId) {
+      if (commentUnsub[cupId]) return;
+      commentUnsub[cupId] = onSnapshot(query(collection(db, 'cups', cupId, 'comments'), orderBy('createdAt', 'asc')), snapshot => {
+        commentsByCup[cupId] = snapshot.docs.map(d => ({ id:d.id, ...d.data() }));
+        renderCupsList();
+      });
+    }
+    onAuthStateChanged(auth, async user => {
+      currentUser = user;
+      isAdminHome = false;
+      if (user) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          isAdminHome = userDoc.data()?.role === 'admin';
+        } catch(e) {}
+      }
+      renderCupsList();
+    });
+    document.getElementById('cupsList').addEventListener('submit', async e => {
+      if (!e.target.classList.contains('cup-comment-form')) return;
+      e.preventDefault();
+      const cupId = e.target.dataset.cupId;
+      const textarea = e.target.querySelector('textarea');
+      const text = textarea.value.trim();
+      if (!text || !currentUser) return;
+      try {
+        await addDoc(collection(db, 'cups', cupId, 'comments'), { text, authorUid: currentUser.uid, authorName: currentUser.displayName || 'Membre', createdAt: serverTimestamp() });
+        textarea.value = '';
+      } catch(err) {}
+    });
+    document.getElementById('cupsList').addEventListener('click', async e => {
+      const val = e.target.dataset.commentDelete;
+      if (!val) return;
+      const [cupId, commentId] = val.split('|');
+      if (confirm('Supprimer ce commentaire ?')) {
+        try { await deleteDoc(doc(db, 'cups', cupId, 'comments', commentId)); } catch(err) {}
+      }
+    });
+    onSnapshot(query(collection(db, 'cups'), orderBy('date', 'asc')), snapshot => {
+      cups = snapshot.docs.map(item => ({ id:item.id, ...item.data() }));
+      const ids = new Set(cups.map(c => c.id));
+      Object.keys(commentUnsub).forEach(id => { if (!ids.has(id)) { commentUnsub[id](); delete commentUnsub[id]; delete commentsByCup[id]; } });
+      cups.forEach(c => watchCupComments(c.id));
+      renderCupsList();
     });
     onSnapshot(collection(db, 'players'), snapshot => {
       const players = snapshot.docs.map(item => ({ id:item.id, ...item.data() })).sort((a,b) => String(a.displayName || '').localeCompare(String(b.displayName || ''), 'fr'));
